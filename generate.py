@@ -58,8 +58,8 @@ def fetch_stats():
         fetch_stats_for_repo(repo)
 
 def fetch_stats_for_repo(repo_file):
-    github_repo_pattern = re.compile(r'^https?://github\.com/([^/]+)/([^/]+)/?$')
-    gitlab_repo_pattern = re.compile(r'^https?://gitlab\.com/([^/]+)/([^/]+)/?$')
+    github_repo_pattern = re.compile(r'^https?://(?:www\.)?github\.com/([^/]+)/([^/]+)(?:/.*)?$')
+    gitlab_repo_pattern = re.compile(r'^https?://(?:www\.)?gitlab\.com/([^/]+)/([^/]+)(?:/.*)?$')
 
     for application in ET.parse(repo_file).getroot().findall('application'):
         pkg = application.find('id').text
