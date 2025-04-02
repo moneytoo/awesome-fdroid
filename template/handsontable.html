@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Awesome F-Droid Apps</title>
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/handsontable/dist/handsontable.full.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable/styles/handsontable.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable/styles/ht-theme-main.min.css" />
+    <style>
+        body {
+            margin: 0;
+        }
+        body, html, #table {
+            height: 100vh;
+        }
+        img {
+            height: 1.4em;
+            display: block;
+        }
+        a {
+            white-space: nowrap;
+        }
+    </style>
+</head>
+<body>
+    <div id="table" class="ht-theme-main-dark-auto"></div>
+
+    <script>
+        const isWideScreen = window.matchMedia('(min-width: 768px)').matches;
+
+        const iconRenderer = (_instance, td, _row, _col, _prop, value) => {
+            const img = document.createElement('img');
+
+            img.src = value;
+            img.addEventListener('mousedown', (event) => {
+                event.preventDefault();
+            });
+            img.alt= '';
+
+            td.innerText = '';
+            td.appendChild(img);
+
+            return td;
+        };
+
+        const nameRenderer = (_instance, td, _row, _col, _prop, value) => {
+            const physicalRow = _instance.toPhysicalRow(_row);
+            const rowData = _instance.getSourceDataAtRow(physicalRow);
+            const pkg = rowData['package'];
+            const repo = rowData['repo'];
+            let url = "";
+
+            if (repo == "F-Droid") {
+                url = 'https://f-droid.org/en/packages/' + pkg + '/';
+            } else if (repo == "IzzyOnDroid") {
+                url = 'https://apt.izzysoft.de/fdroid/index/apk/' + pkg;
+            }
+
+            if (url != "") {
+                const a = document.createElement('a');
+                a.innerHTML = rowData['name'];
+                a.setAttribute('href', url);
+                a.setAttribute('target', '_blank');
+                td.innerText = '';
+                td.appendChild(a);
+                return td;
+            } else {
+                td.innerText = value;
+            }
+        }
+
+        const sourceRenderer = (_instance, td, _row, _col, _prop, value) => {
+            const a = document.createElement('a');
+            a.innerHTML = value;
+            a.setAttribute('href', 'https://' + value);
+            a.setAttribute('target', '_blank');
+            td.innerText = '';
+            td.appendChild(a);
+            return td;
+        }
+
+        const container = document.querySelector('#table');
+
+        const hot = new Handsontable(container, {
+            data: {{ data }},
+
+            columns: [
+                {
+                    title: 'Icon',
+                    renderer: iconRenderer,
+                    data: 'icon',
+                    width: 36,
+                    columnSorting: { headerAction: false },
+                },
+                {
+                    title: 'Name',
+                    renderer: nameRenderer,
+                    data: 'name',
+                    width: 200,
+                },
+                {
+                    title: 'Stars',
+                    type: 'numeric',
+                    data: 'stars',
+                    width: 100,
+                },
+                {
+                    title: 'Updated',
+                    type: 'date',
+                    data: 'lastupdated',
+                    width: 120,
+                },
+                {
+                    title: 'Added',
+                    type: 'date',
+                    data: 'added',
+                    width: 120,
+                },
+                {
+                    title: 'Repo',
+                    type: 'text',
+                    data: 'repo',
+                    width: 100,
+                },
+                {
+                    title: 'Category',
+                    type: 'text',
+                    data: 'category',
+                    width: 100,
+                },
+                {
+                    title: 'Summary',
+                    type: 'text',
+                    data: 'summary',
+                    width: 350,
+                },
+                {
+                    title: 'Package',
+                    type: 'text',
+                    data: 'package',
+                    width: 200,
+                },
+                {
+                    title: 'Source',
+                    renderer: sourceRenderer,
+                    data: 'source',
+                    width: 200,
+                },
+                {
+                    title: 'Language',
+                    type: 'text',
+                    data: 'language',
+                    width: 100,
+                },
+                {
+                    title: 'Issues',
+                    type: 'numeric',
+                    data: 'issues',
+                    width: 100,
+                },
+                {
+                    title: 'License',
+                    type: 'text',
+                    data: 'license',
+                    width: 120,
+                },
+                {
+                    title: 'Status',
+                    type: 'text',
+                    data: 'status',
+                    width: 100,
+                },
+            ],
+            //rowHeaders: true,
+            //colHeaders: true,
+            //height: 'auto',
+            height: '100vh',
+            //width: 'auto',
+            autoWrapRow: false,
+            //autoWrapCol: true,
+            wordWrap: false,
+            filters: true,
+            dropdownMenu: ["filter_by_condition", "filter_by_condition2", "filter_operators", "filter_by_value", "filter_action_bar"],
+            renderAllRows: false,
+            //viewportRowRenderingOffset: 100,
+            columnSorting: true,
+            afterGetColHeader(col, TH) {
+                if (col < 1){
+                    const button = TH.querySelector('.changeType');
+                    if (!button) {
+                        return;
+                    }
+                    button.parentElement.removeChild(button);
+                }
+            },
+            fixedColumnsStart: isWideScreen ? 2 : 0,
+            dateFormat: 'YYYY-MM-DD',
+            manualColumnResize: true,
+            licenseKey: 'non-commercial-and-evaluation' // for non-commercial use only
+        });
+        
+    </script>
+</body>
+</html>
