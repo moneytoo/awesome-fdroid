@@ -4,13 +4,13 @@ A **table** of all Android apps from the largest F-Droid repositories. **Filter*
 
 [<img src="https://github.com/user-attachments/assets/02dd4059-6551-483f-a7bd-20d7fe3eb0e4">](https://fdroid.tabler.dev/)
 
-Visit 👉 https://fdroid.tabler.dev/ 👈 to view the table.
+Visit 👉 https://fdroid.tabler.dev/ 👈 to explore the table.
 
 ## About
 
 It's not easy to discover great new apps on F-Droid without reviews or download counts.
 
-This table lists app repository star counts from GitHub and GitLab. Around 80% of F-Droid app source repositories are hosted on GitHub and about 10% on GitLab. The number of stars may not be the best signal but at least it's something.
+This table lists app repository star counts from GitHub and GitLab. Around 80% of F-Droid app source repositories are hosted on GitHub and about 10% on GitLab. The number of stars may not be the best signal, but at least it's something.
 
 ## Repositories
 
