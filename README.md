@@ -8,13 +8,13 @@ Visit 👉 https://fdroid.tabler.dev/ 👈 to explore the table.
 
 ## About
 
-It's not easy to discover great new apps on F-Droid without reviews or download counts.
+It's not easy to discover great new apps on F-Droid without reviews or ~~download counts~~ ([F-Droid Stats](https://divested.dev/pages/fdroid_stats) using [F-Droid Metrics](https://f-droid.org/2021/03/01/fdroid-metrics-and-clean-insights.html)).
 
 This table lists app repository star counts from GitHub and GitLab. Around 80% of F-Droid app source repositories are hosted on GitHub and about 10% on GitLab. The number of stars may not be the best signal, but at least it's something.
 
 ## Repositories
 
-Currently apps from these F-Droid repositories are included:
+Currently, apps from these F-Droid repositories are included:
 
 * [F-Droid](https://f-droid.org/repo)
 * [F-Droid Archive](https://f-droid.org/archive)
@@ -22,4 +22,5 @@ Currently apps from these F-Droid repositories are included:
 
 ## TODO
 
+- [ ] Include data from [F-Droid Metrics](https://f-droid.org/2021/03/01/fdroid-metrics-and-clean-insights.html)
 - [ ] Setup GitHub Actions to automate updating
