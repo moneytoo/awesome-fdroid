@@ -19,6 +19,7 @@ REPO_NAME_IZZY = "IzzyOnDroid"
 
 DIR_GITHUB = 'work/github'
 DIR_GITLAB = 'work/gitlab'
+DIR_CODEBERG = 'work/codeberg'
 DIR_ICONS = "icons"
 
 FILE_REPO_FDROID = "work/fdroid.xml"
@@ -52,7 +53,7 @@ def fetch_fdroid_repo(repo_url, path):
         file.write(response.content)
 
 def fetch_stats():
-    for dir in [DIR_GITHUB, DIR_GITLAB]:
+    for dir in [DIR_GITHUB, DIR_GITLAB, DIR_CODEBERG]:
         os.makedirs(dir, exist_ok=True)
     for repo in [FILE_REPO_FDROID, FILE_REPO_FDROID_ARCHIVE, FILE_REPO_IZZY]:
         fetch_stats_for_repo(repo)
@@ -60,6 +61,7 @@ def fetch_stats():
 def fetch_stats_for_repo(repo_file):
     github_repo_pattern = re.compile(r'^https?://(?:www\.)?github\.com/([^/]+)/([^/]+)(?:/.*)?$')
     gitlab_repo_pattern = re.compile(r'^https?://(?:www\.)?gitlab\.com/([^/]+)/([^/]+)(?:/.*)?$')
+    codeberg_repo_pattern = re.compile(r'^https?://(?:www\.)?codeberg\.org/([^/]+)/([^/]+)(?:/.*)?$')
 
     for application in ET.parse(repo_file).getroot().findall('application'):
         pkg = application.find('id').text
@@ -74,14 +76,20 @@ def fetch_stats_for_repo(repo_file):
                 "Accept": "application/vnd.github.v3+json"
             }
             fetch_stats_save(f"https://api.github.com/repos/{owner}/{repo}", headers, pkg, DIR_GITHUB)
-        else:
-            match_gitlab = gitlab_repo_pattern.match(source)
-            if match_gitlab:
-                owner, repo = match_gitlab.groups()
-                headers = {
-                    "PRIVATE-TOKEN": f"{API_TOKEN_GITLAB}"
-                }
-                fetch_stats_save(f"https://gitlab.com/api/v4/projects/{owner}%2F{repo}", headers, pkg, DIR_GITLAB)
+            continue
+        match_gitlab = gitlab_repo_pattern.match(source)
+        if match_gitlab:
+            owner, repo = match_gitlab.groups()
+            headers = {
+                "PRIVATE-TOKEN": f"{API_TOKEN_GITLAB}"
+            }
+            fetch_stats_save(f"https://gitlab.com/api/v4/projects/{owner}%2F{repo}", headers, pkg, DIR_GITLAB)
+            continue
+        match_codeberg = codeberg_repo_pattern.match(source)
+        if match_codeberg:
+            owner, repo = match_codeberg.groups()
+            fetch_stats_save(f"https://codeberg.org/api/v1/repos/{owner}/{repo}", None, pkg, DIR_CODEBERG)
+            continue
 
 def fetch_stats_save(url, headers, pkg, dir):
     save_path = os.path.join(dir, f"{pkg}.json")
@@ -185,16 +193,25 @@ def build_row_data(application, repo):
     }
 
 def get_stats(pkg):
-    github_file = os.path.join('work/github', f"{pkg}.json")
-    gitlab_file = os.path.join('work/gitlab', f"{pkg}.json")
-    for file_path, source_type in [(github_file, 'github'), (gitlab_file, 'gitlab')]:
+    github_file = os.path.join(DIR_GITHUB, f"{pkg}.json")
+    gitlab_file = os.path.join(DIR_GITLAB, f"{pkg}.json")
+    codeberg_file = os.path.join(DIR_CODEBERG, f"{pkg}.json")
+    for file_path, source_type in [(github_file, 'github'), (gitlab_file, 'gitlab'), (codeberg_file, 'codeberg')]:
         if os.path.exists(file_path):
             with open(file_path, 'r', encoding='utf-8') as file:
                 data = json.load(file)
-                stars = data.get('stargazers_count' if source_type == 'github' else 'star_count', None)
+                match source_type:
+                    case 'github':
+                        stars = data.get('stargazers_count', None)
+                    case 'gitlab':
+                        stars = data.get('star_count', None)
+                    case 'codeberg':
+                        stars = data.get('stars_count', None)
+                    case _:
+                        stars = None
                 status = "Archived" if data.get('archived', False) else None
                 issues = data.get('open_issues_count', None)
-                language = data.get('language', None) if source_type == 'github' else None
+                language = data.get('language', None)
                 return stars, status, issues, language
     return None, None, None, None
 
