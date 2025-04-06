@@ -1,6 +1,6 @@
 # Awesome F-Droid Apps
 
-A **table** of all Android apps from the largest F-Droid repositories. **Filter** and **sort** apps by **pupularity** (stars on GitHub and GitLab), **recency**, category etc. Discover great FOSS apps!
+A **table** of all Android apps from the largest F-Droid repositories. **Filter** and **sort** apps by **popularity** (stars on GitHub and GitLab), **recency**, category etc. Discover great FOSS apps!
 
 [<img src="https://github.com/user-attachments/assets/02dd4059-6551-483f-a7bd-20d7fe3eb0e4">](https://fdroid.tabler.dev/)
 
