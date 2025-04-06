@@ -4,6 +4,8 @@ import re
 import requests
 import time
 import pickle
+import subprocess
+import yaml
 
 import xml.etree.ElementTree as ET
 
@@ -21,10 +23,13 @@ DIR_GITHUB = 'work/github'
 DIR_GITLAB = 'work/gitlab'
 DIR_CODEBERG = 'work/codeberg'
 DIR_ICONS = "icons"
+DIR_FDROIDDATA = 'work/fdroiddata'
+DIR_METRICS = 'work/metrics'
 
 FILE_REPO_FDROID = "work/fdroid.xml"
 FILE_REPO_FDROID_ARCHIVE = "work/fdroid-archive.xml"
 FILE_REPO_IZZY = "work/izzy.xml"
+FILE_VERSIONS_PKL = 'work/versions.pkl'
 
 URL_REPO_FDROID = "https://f-droid.org/repo"
 URL_REPO_FDROID_ARCHIVE = "https://f-droid.org/archive"
@@ -32,6 +37,8 @@ URL_REPO_IZZY = "https://apt.izzysoft.de/fdroid/repo"
 
 OUTPUT = "index.html"
 
+metrics = {}
+versions = {}
 no_icon = None
 
 load_dotenv()
@@ -44,10 +51,15 @@ def fetch_stats_for_repos():
     fetch_fdroid_repo(f"{URL_REPO_FDROID_ARCHIVE}/index.xml", FILE_REPO_FDROID_ARCHIVE)
     fetch_fdroid_repo(f"{URL_REPO_IZZY}/index.xml", FILE_REPO_IZZY)
 
-def fetch_fdroid_repo(repo_url, path):
+def is_path_fresh(path):
     if os.path.exists(path):
         if (datetime.now() - datetime.fromtimestamp(os.path.getmtime(path))) < timedelta(hours=4):
-            return
+            return True
+    return False
+
+def fetch_fdroid_repo(repo_url, path):
+    if is_path_fresh(path):
+        return
     response = requests.get(repo_url)
     with open(path, 'wb') as file:
         file.write(response.content)
@@ -172,6 +184,7 @@ def build_row_data(application, repo):
     icon = f"icons/{pkg}.png"
     if not os.path.exists(icon):
         icon = None
+    fdroid_downloads = get_metrics_count(pkg)
 
     stars, status, issues, language = get_stats(pkg)
 
@@ -190,6 +203,7 @@ def build_row_data(application, repo):
         "issues": issues,
         "language": language,
         "repo": repo,
+        "fdroid_downloads": fdroid_downloads
     }
 
 def get_stats(pkg):
@@ -222,9 +236,99 @@ def build_html(data):
     with open(OUTPUT, 'w', encoding='utf-8') as file:
         file.write(rendered_html)
 
+def fetch_fdroiddata():
+    url = 'https://gitlab.com/fdroid/fdroiddata.git/'
+    if os.path.isdir(os.path.join(DIR_FDROIDDATA, ".git")):
+        subprocess.run(["git", "-C", DIR_FDROIDDATA, "pull"])
+    else:
+        subprocess.run(["git", "clone", url, DIR_FDROIDDATA])
+
+def load_data():
+    global versions
+    if is_path_fresh(FILE_VERSIONS_PKL):
+        with open(FILE_VERSIONS_PKL, "rb") as file:
+            versions = pickle.load(file)
+    else:
+        path = f"{DIR_FDROIDDATA}/metadata"
+        for filename in os.listdir(path):
+            full_path = os.path.join(path, filename)
+            if os.path.isfile(full_path):
+                pkg = Path(filename).stem
+                with open(full_path, 'r', encoding='utf-8') as file:
+                    yml = yaml.safe_load(file)
+                    versions[pkg] = {}
+                    for build in yml.get("Builds", []):
+                        versions[pkg][build.get('versionCode')] = build.get('versionName')
+        with open(FILE_VERSIONS_PKL, "wb") as file:
+            pickle.dump(versions, file)
+
+
+def fetch_metrics():
+    for dir in ['http02', 'http03']:
+        path = f"{DIR_METRICS}/{dir}"
+        if is_path_fresh(f"{path}/index.json"):
+            return
+        os.makedirs(path, exist_ok=True)
+        url = f"https://fdroid.gitlab.io/metrics/{dir}.fdroid.net/index.json"
+        response = requests.get(url)
+        with open(f"{path}/index.json", 'wb') as file:
+            file.write(response.content)
+        index = response.json()
+        for file_name in index:
+            if os.path.exists(f"{path}/{file_name}"):
+                continue
+            file_url = f"https://fdroid.gitlab.io/metrics/{dir}.fdroid.net/{file_name}"
+            response = requests.get(file_url)
+            with open(f"{path}/{file_name}", 'wb') as file:
+                file.write(response.content)
+
+def process_metrics():
+    global metrics
+    global versions
+    for dir in ['http02', 'http03']:
+        path = f"{DIR_METRICS}/{dir}"
+        for filename in os.listdir(path):
+            if filename == 'index.json':
+                continue
+            full_path = os.path.join(path, filename)
+            with open(full_path, 'r', encoding='utf-8') as file:
+                data = json.load(file)
+                paths = data.get('paths')
+                for value in paths:
+                    if value.startswith('/repo/') and value.endswith('.apk'):
+                        pattern = re.compile(r"^/repo/(.+)_(\d+)\.apk$")
+                        match = pattern.match(value)
+                        if match:
+                            package, versionCode = match.groups()
+                            versionCode = int(versionCode)
+                            hits = paths.get(value).get('hits')
+                            if package not in metrics:
+                                metrics[package] = {'hits': 0, 'versionCodes': set(), 'versionNames': set()}
+                            if package in versions:
+                                if versionCode in versions[package]:
+                                    versionName = versions[package][versionCode]
+                                    if versionName is not None:
+                                        metrics[package]["hits"] += hits
+                                        metrics[package]["versionNames"].add(versionName)
+
+def get_metrics_count(package):
+    global metrics
+    if package in metrics:
+        downloads = metrics[package]["hits"]
+        versionNames = len(metrics[package]['versionNames'])
+        if downloads == 0 or versionNames == 0:
+            return None
+        average_downloads_per_version = downloads // versionNames
+        return average_downloads_per_version
+
+fetch_fdroiddata()
+fetch_metrics()
 fetch_stats_for_repos()
 fetch_icons()
 fetch_stats()
+
+load_data()
+process_metrics()
 
 table_data = build_table_data()
 build_html(table_data)
