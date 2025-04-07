@@ -23,5 +23,5 @@ Currently, apps from these F-Droid repositories are included:
 ## TODO
 
 - [x] Include data from [F-Droid Metrics](https://f-droid.org/2021/03/01/fdroid-metrics-and-clean-insights.html)
-- [ ] Include download counts from Google Play for matching packages ([Google-Play-Scraper](https://github.com/JoMingyu/google-play-scraper)?)
+- [x] Include download counts from Google Play for matching packages ([Google-Play-Scraper](https://github.com/JoMingyu/google-play-scraper)?)
 - [ ] Setup GitHub Actions to automate updating

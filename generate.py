@@ -6,6 +6,8 @@ import time
 import pickle
 import subprocess
 import yaml
+import google_play_scraper
+import random
 
 import xml.etree.ElementTree as ET
 
@@ -14,6 +16,7 @@ from urllib.parse import urlparse
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 from dotenv import load_dotenv
+from google_play_scraper.exceptions import NotFoundError
 
 REPO_NAME_FDROID = "F-Droid"
 REPO_NAME_FDROID_ARCHIVE = "F-Droid (Archive)"
@@ -40,6 +43,7 @@ OUTPUT = "index.html"
 metrics = {}
 versions = {}
 no_icon = None
+google_missing = None
 
 load_dotenv()
 
@@ -185,6 +189,7 @@ def build_row_data(application, repo):
     if not os.path.exists(icon):
         icon = None
     fdroid_downloads = get_metrics_count(pkg)
+    google_downloads = get_google_downloads(pkg)
 
     stars, status, issues, language = get_stats(pkg)
 
@@ -203,7 +208,8 @@ def build_row_data(application, repo):
         "issues": issues,
         "language": language,
         "repo": repo,
-        "fdroid_downloads": fdroid_downloads
+        "fdroid_downloads": fdroid_downloads,
+        "google_downloads": google_downloads
     }
 
 def get_stats(pkg):
@@ -321,11 +327,46 @@ def get_metrics_count(package):
         average_downloads_per_version = downloads // versionNames
         return average_downloads_per_version
 
+def get_google_downloads(package):
+    path = f"work/google/{package}.json"
+    if os.path.exists(path):
+        with open(path, 'r', encoding='utf-8') as file:
+            data = json.load(file)
+            return data.get('realInstalls', None)
+    return None
+
+def fetch_google_play():
+    os.makedirs('work/google', exist_ok=True)
+    fetch_google_play_apps_from_repo(FILE_REPO_FDROID)
+    fetch_google_play_apps_from_repo(FILE_REPO_FDROID_ARCHIVE)
+    fetch_google_play_apps_from_repo(FILE_REPO_IZZY)
+
+def fetch_google_play_apps_from_repo(repo_file):
+    google_missing_file = Path("work/google_missing.pkl")
+    global google_missing
+    google_missing = pickle.loads(google_missing_file.read_bytes()) if google_missing_file.exists() else set()
+
+    for application in ET.parse(repo_file).getroot().findall('application'):
+        pkg = application.find('id').text
+        path = f"work/google/{pkg}.json"
+        if os.path.exists(path) or pkg in google_missing:
+            continue
+        #time.sleep(random.uniform(5, 10))
+        try:
+            result = google_play_scraper.app(pkg)
+            with open(path, 'w') as file:
+                json.dump(result, file, indent=4)
+        except NotFoundError as e:
+            google_missing.add(pkg)
+        google_missing_file.write_bytes(pickle.dumps(google_missing))
+
+
 fetch_fdroiddata()
 fetch_metrics()
 fetch_stats_for_repos()
 fetch_icons()
 fetch_stats()
+fetch_google_play()
 
 load_data()
 process_metrics()

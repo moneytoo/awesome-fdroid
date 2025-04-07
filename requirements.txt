@@ -1,3 +1,4 @@
+google_play_scraper==1.2.7
 Jinja2==3.1.6
 python-dotenv==1.1.0
 PyYAML==6.0.2
