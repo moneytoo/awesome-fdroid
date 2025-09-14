@@ -173,6 +173,46 @@ def build_table_data():
 
     return data
 
+def sdk_to_version(sdk):
+    mapping = {
+        1: 1,
+        2: 1.1,
+        3: 1.5,
+        4: 1.6,
+        5: 2.0,
+        6: 2.0,
+        7: 2.1,
+        8: 2.2,
+        9: 2.3,
+        10: 2.3,
+        11: 3.0,
+        12: 3.1,
+        13: 3.2,
+        14: 4.0,
+        15: 4.0,
+        16: 4.1,
+        17: 4.2,
+        18: 4.3,
+        19: 4.4,
+        20: 4.4,
+        21: 5.0,
+        22: 5.1,
+        23: 6.0,
+        24: 7.0,
+        25: 7.1,
+        26: 8.0,
+        27: 8.1,
+        28: 9,
+        29: 10,
+        30: 11,
+        31: 12,
+        32: 12
+    }
+    if sdk in mapping:
+        return mapping[sdk]
+    else:
+        return sdk - 20
+
 def build_row_data(application, repo):
     pkg = application.find('id').text
 
@@ -185,6 +225,16 @@ def build_row_data(application, repo):
         source = source.removeprefix('https://').removeprefix('http://')
     license = application.find('license').text
     category = application.find('category').text
+    sdk = None
+    minimum = None
+    for package in application.findall('package'):
+        sdkver = package.find('sdkver')
+        if sdkver is not None:
+            i = int(sdkver.text)
+            if sdk is None or i < sdk:
+                sdk = i
+    if sdk is not None:
+        minimum = sdk_to_version(sdk)
     icon = f"icons/{pkg}.png"
     if not os.path.exists(icon):
         icon = None
@@ -208,6 +258,7 @@ def build_row_data(application, repo):
         "issues": issues,
         "language": language,
         "repo": repo,
+        "minimum": minimum,
         "fdroid_downloads": fdroid_downloads,
         "google_downloads": google_downloads
     }
