@@ -1,0 +1,38 @@
+name: Update
+
+on:
+  schedule:
+    - cron: '37 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: update
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -u generate.py
+        env:
+          API_TOKEN_GITHUB: ${{ secrets.API_TOKEN_GITHUB }}
+          API_TOKEN_GITLAB: ${{ secrets.API_TOKEN_GITLAB }}
+          API_TOKEN_CODEBERG: ${{ secrets.API_TOKEN_CODEBERG }}
+      - if: ${{ !cancelled() }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html icons state
+          git diff --cached --quiet && exit 0
+          git commit -m Update
+          git pull --rebase
+          git push

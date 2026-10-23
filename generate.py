@@ -8,26 +8,25 @@ import subprocess
 import yaml
 import google_play_scraper
 import random
+import zlib
 
 import xml.etree.ElementTree as ET
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 from dotenv import load_dotenv
-from google_play_scraper.exceptions import NotFoundError
+from google_play_scraper.exceptions import NotFoundError, ExtraHTTPError
 
 REPO_NAME_FDROID = "F-Droid"
 REPO_NAME_FDROID_ARCHIVE = "F-Droid (Archive)"
 REPO_NAME_IZZY = "IzzyOnDroid"
 
-DIR_GITHUB = 'work/github'
-DIR_GITLAB = 'work/gitlab'
-DIR_CODEBERG = 'work/codeberg'
 DIR_ICONS = "icons"
 DIR_FDROIDDATA = 'work/fdroiddata'
-DIR_METRICS = 'work/metrics'
+DIR_STATE = 'state'
+DIR_METRICS = 'state/metrics'
 
 FILE_REPO_FDROID = "work/fdroid.xml"
 FILE_REPO_FDROID_ARCHIVE = "work/fdroid-archive.xml"
@@ -40,15 +39,59 @@ URL_REPO_IZZY = "https://apt.izzysoft.de/fdroid/repo"
 
 OUTPUT = "index.html"
 
+TTL_STATS = 7
+TTL_GOOGLE = 30
+TTL_MISSING = 30
+
+BUDGET_STATS = {'github': 1000, 'gitlab': 200, 'codeberg': 100}
+PAUSE_STATS = {'github': 0, 'gitlab': 0.5, 'codeberg': 2}
+BUDGET_GOOGLE = 300
+BUDGET_ICONS = {'f-droid.org': 300, 'apt.izzysoft.de': 50}
+
 metrics = {}
 versions = {}
-no_icon = None
-google_missing = None
+stats = {}
+google = {}
 
 load_dotenv()
 
 API_TOKEN_GITHUB = os.getenv('API_TOKEN_GITHUB')
 API_TOKEN_GITLAB = os.getenv('API_TOKEN_GITLAB')
+API_TOKEN_CODEBERG = os.getenv('API_TOKEN_CODEBERG')
+
+def load_state(name):
+    path = Path(DIR_STATE, f"{name}.json")
+    return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+
+def save_state(name, state):
+    os.makedirs(DIR_STATE, exist_ok=True)
+    lines = [f"{json.dumps(pkg)}: {json.dumps(state[pkg], sort_keys=True)}" for pkg in sorted(state)]
+    Path(DIR_STATE, f"{name}.json").write_text("{\n" + ",\n".join(lines) + "\n}\n", encoding='utf-8')
+
+def timestamp():
+    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+def expires(pkg, record, days):
+    jitter = 0.8 + 0.4 * zlib.crc32(pkg.encode()) / 2**32
+    return datetime.fromisoformat(record['fetched']) + timedelta(days=days * jitter)
+
+def due(state, pkgs, ttl, budget):
+    now = datetime.now(timezone.utc)
+    pending = []
+    for pkg in pkgs:
+        record = state.get(pkg)
+        if record is None:
+            pending.append((datetime.min.replace(tzinfo=timezone.utc), pkg))
+            continue
+        expiry = expires(pkg, record, ttl if record['status'] == 200 else TTL_MISSING)
+        if expiry <= now:
+            pending.append((expiry, pkg))
+    return [pkg for _, pkg in sorted(pending)[:budget]]
+
+def is_throttled(response):
+    if response.status_code in (401, 429):
+        return True
+    return response.status_code == 403 and (response.headers.get('x-ratelimit-remaining') == '0' or 'retry-after' in response.headers)
 
 def fetch_stats_for_repos():
     fetch_fdroid_repo(f"{URL_REPO_FDROID}/index.xml", FILE_REPO_FDROID)
@@ -64,93 +107,129 @@ def is_path_fresh(path):
 def fetch_fdroid_repo(repo_url, path):
     if is_path_fresh(path):
         return
-    response = requests.get(repo_url)
+    response = requests.get(repo_url, timeout=300)
+    response.raise_for_status()
     with open(path, 'wb') as file:
         file.write(response.content)
 
 def fetch_stats():
-    for dir in [DIR_GITHUB, DIR_GITLAB, DIR_CODEBERG]:
-        os.makedirs(dir, exist_ok=True)
-    for repo in [FILE_REPO_FDROID, FILE_REPO_FDROID_ARCHIVE, FILE_REPO_IZZY]:
-        fetch_stats_for_repo(repo)
+    patterns = {
+        'github': re.compile(r'^https?://(?:www\.)?github\.com/([^/]+)/([^/]+)(?:/.*)?$'),
+        'gitlab': re.compile(r'^https?://(?:www\.)?gitlab\.com/([^/]+)/([^/]+)(?:/.*)?$'),
+        'codeberg': re.compile(r'^https?://(?:www\.)?codeberg\.org/([^/]+)/([^/]+)(?:/.*)?$')
+    }
+    sources = {name: {} for name in patterns}
+    for repo_file in [FILE_REPO_FDROID, FILE_REPO_FDROID_ARCHIVE, FILE_REPO_IZZY]:
+        for application in ET.parse(repo_file).getroot().findall('application'):
+            pkg = application.find('id').text
+            source = application.find('source').text
+            if source is None:
+                continue
+            for name, pattern in patterns.items():
+                match = pattern.match(source)
+                if match:
+                    sources[name].setdefault(pkg, match.groups())
+                    break
+    for name, repos in sources.items():
+        stats[name] = {pkg: record for pkg, record in load_state(name).items() if pkg in repos}
+        fetch_stats_for_platform(name, repos, stats[name])
+        save_state(name, stats[name])
 
-def fetch_stats_for_repo(repo_file):
-    github_repo_pattern = re.compile(r'^https?://(?:www\.)?github\.com/([^/]+)/([^/]+)(?:/.*)?$')
-    gitlab_repo_pattern = re.compile(r'^https?://(?:www\.)?gitlab\.com/([^/]+)/([^/]+)(?:/.*)?$')
-    codeberg_repo_pattern = re.compile(r'^https?://(?:www\.)?codeberg\.org/([^/]+)/([^/]+)(?:/.*)?$')
-
-    for application in ET.parse(repo_file).getroot().findall('application'):
-        pkg = application.find('id').text
-        source = application.find('source').text
-        if source is None:
-            continue
-        match_github = github_repo_pattern.match(source)
-        if match_github:
-            owner, repo = match_github.groups()
-            headers = {
+def stats_request(name, owner, repo):
+    match name:
+        case 'github':
+            return f"https://api.github.com/repos/{owner}/{repo}", {
                 "Authorization": f"token {API_TOKEN_GITHUB}",
                 "Accept": "application/vnd.github.v3+json"
             }
-            fetch_stats_save(f"https://api.github.com/repos/{owner}/{repo}", headers, pkg, DIR_GITHUB)
-            continue
-        match_gitlab = gitlab_repo_pattern.match(source)
-        if match_gitlab:
-            owner, repo = match_gitlab.groups()
-            headers = {
+        case 'gitlab':
+            return f"https://gitlab.com/api/v4/projects/{owner}%2F{repo}", {
                 "PRIVATE-TOKEN": f"{API_TOKEN_GITLAB}"
             }
-            fetch_stats_save(f"https://gitlab.com/api/v4/projects/{owner}%2F{repo}", headers, pkg, DIR_GITLAB)
-            continue
-        match_codeberg = codeberg_repo_pattern.match(source)
-        if match_codeberg:
-            owner, repo = match_codeberg.groups()
-            fetch_stats_save(f"https://codeberg.org/api/v1/repos/{owner}/{repo}", None, pkg, DIR_CODEBERG)
-            continue
+        case 'codeberg':
+            headers = {"Authorization": f"token {API_TOKEN_CODEBERG}"} if API_TOKEN_CODEBERG else None
+            return f"https://codeberg.org/api/v1/repos/{owner}/{repo}", headers
 
-def fetch_stats_save(url, headers, pkg, dir):
-    save_path = os.path.join(dir, f"{pkg}.json")
-    if os.path.exists(save_path):
-        return
-    data = requests.get(url, headers=headers).json()
-    with open(save_path, 'w', encoding='utf-8') as file:
-        json.dump(data, file, indent=4)
+def fetch_stats_for_platform(name, repos, state):
+    stars_key = {'github': 'stargazers_count', 'gitlab': 'star_count', 'codeberg': 'stars_count'}[name]
+    for pkg in due(state, repos, TTL_STATS, BUDGET_STATS[name]):
+        url, headers = stats_request(name, *repos[pkg])
+        try:
+            response = requests.get(url, headers=headers, timeout=30)
+        except requests.RequestException as e:
+            print(f"{name}: {pkg}: {e}")
+            continue
+        if is_throttled(response):
+            print(f"::warning::{name}: stopped at {pkg} with HTTP {response.status_code}")
+            break
+        if response.status_code >= 500:
+            continue
+        if response.status_code == 200:
+            data = response.json()
+            state[pkg] = {
+                "stars": data.get(stars_key),
+                "archived": data.get('archived', False),
+                "issues": data.get('open_issues_count'),
+                "language": data.get('language'),
+                "status": 200,
+                "fetched": timestamp()
+            }
+        else:
+            state[pkg] = {"status": response.status_code, "fetched": timestamp()}
+        time.sleep(PAUSE_STATS[name])
 
 def fetch_icons():
     os.makedirs(DIR_ICONS, exist_ok=True)
-    no_icon_file = Path("work/iconless.pkl")
-    global no_icon
-    no_icon = pickle.loads(no_icon_file.read_bytes()) if no_icon_file.exists() else set()
-    fetch_icons_from_repo(FILE_REPO_FDROID, URL_REPO_FDROID)
-    fetch_icons_from_repo(FILE_REPO_FDROID_ARCHIVE, URL_REPO_FDROID_ARCHIVE)
-    fetch_icons_from_repo(FILE_REPO_IZZY, URL_REPO_IZZY)
-    no_icon_file.write_bytes(pickle.dumps(no_icon))
-
-def fetch_icons_from_repo(repo_file, repo_url):
-    for application in ET.parse(repo_file).getroot().findall('application'):
-        pkg = application.find('id').text
-        if os.path.exists(f"{DIR_ICONS}/{pkg}.png"):
+    icons = {}
+    for repo_file, repo_url in [(FILE_REPO_FDROID, URL_REPO_FDROID), (FILE_REPO_FDROID_ARCHIVE, URL_REPO_FDROID_ARCHIVE), (FILE_REPO_IZZY, URL_REPO_IZZY)]:
+        for application in ET.parse(repo_file).getroot().findall('application'):
+            pkg = application.find('id').text
+            if pkg in icons:
+                continue
+            if application.find('icon') is not None:
+                ico = application.find('icon').text
+                url = f"{repo_url}/icons/{ico}"
+            else:
+                url = f"{repo_url}/{pkg}/en-US/icon.png"
+            icons[pkg] = (url, application.find('lastupdated').text)
+    state = {pkg: record for pkg, record in load_state('icons').items() if pkg in icons}
+    budget = dict(BUDGET_ICONS)
+    for pkg, (url, lastupdated) in icons.items():
+        record = state.get(pkg)
+        exists = os.path.exists(f"{DIR_ICONS}/{pkg}.png")
+        if record is None and exists:
+            state[pkg] = {"lastupdated": lastupdated, "status": 200, "fetched": timestamp()}
             continue
-        global no_icon
-        if pkg in no_icon:
+        if not is_icon_stale(pkg, record, lastupdated, exists):
             continue
-        if application.find('icon') is not None:
-            ico = application.find('icon').text
-            url = f"{repo_url}/icons/{ico}"
-        else:
-            url = f"{repo_url}/{pkg}/en-US/icon.png"
-        fetch_icon(url, pkg)
+        host = urlparse(url).netloc
+        if budget.get(host, 0) <= 0:
+            continue
+        budget[host] -= 1
+        fetch_icon(url, pkg, lastupdated, state)
+    save_state('icons', state)
 
-def fetch_icon(url, pkg):
+def is_icon_stale(pkg, record, lastupdated, exists):
+    if record is None or record['lastupdated'] != lastupdated:
+        return True
+    if record['status'] == 200:
+        return not exists
+    return expires(pkg, record, TTL_MISSING) <= datetime.now(timezone.utc)
+
+def fetch_icon(url, pkg, lastupdated, state):
     if "f-droid.org" not in urlparse(url).netloc:
         time.sleep(7)
-    path = f"{DIR_ICONS}/{pkg}.png"
-    response = requests.get(url)
-    if response.status_code == 200:
-        with open(path, 'wb') as file:
-            file.write(response.content)
-    else:
-        global no_icon
-        no_icon.add(pkg)
+    path = Path(DIR_ICONS, f"{pkg}.png")
+    try:
+        response = requests.get(url, timeout=30)
+    except requests.RequestException as e:
+        print(f"icon: {pkg}: {e}")
+        return
+    if response.status_code == 429 or response.status_code >= 500:
+        return
+    if response.status_code == 200 and (not path.exists() or path.read_bytes() != response.content):
+        path.write_bytes(response.content)
+    state[pkg] = {"lastupdated": lastupdated, "status": response.status_code, "fetched": timestamp()}
 
 def build_table_data():
     data = []
@@ -264,26 +343,11 @@ def build_row_data(application, repo):
     }
 
 def get_stats(pkg):
-    github_file = os.path.join(DIR_GITHUB, f"{pkg}.json")
-    gitlab_file = os.path.join(DIR_GITLAB, f"{pkg}.json")
-    codeberg_file = os.path.join(DIR_CODEBERG, f"{pkg}.json")
-    for file_path, source_type in [(github_file, 'github'), (gitlab_file, 'gitlab'), (codeberg_file, 'codeberg')]:
-        if os.path.exists(file_path):
-            with open(file_path, 'r', encoding='utf-8') as file:
-                data = json.load(file)
-                match source_type:
-                    case 'github':
-                        stars = data.get('stargazers_count', None)
-                    case 'gitlab':
-                        stars = data.get('star_count', None)
-                    case 'codeberg':
-                        stars = data.get('stars_count', None)
-                    case _:
-                        stars = None
-                status = "Archived" if data.get('archived', False) else None
-                issues = data.get('open_issues_count', None)
-                language = data.get('language', None)
-                return stars, status, issues, language
+    for name in ['github', 'gitlab', 'codeberg']:
+        record = stats.get(name, {}).get(pkg)
+        if record is not None:
+            status = "Archived" if record.get('archived', False) else None
+            return record.get('stars'), status, record.get('issues'), record.get('language')
     return None, None, None, None
 
 def build_html(data):
@@ -298,7 +362,8 @@ def fetch_fdroiddata():
     if os.path.isdir(os.path.join(DIR_FDROIDDATA, ".git")):
         subprocess.run(["git", "-C", DIR_FDROIDDATA, "pull"])
     else:
-        subprocess.run(["git", "clone", url, DIR_FDROIDDATA])
+        subprocess.run(["git", "clone", "--depth", "1", "--filter=blob:none", "--sparse", url, DIR_FDROIDDATA])
+        subprocess.run(["git", "-C", DIR_FDROIDDATA, "sparse-checkout", "set", "--no-cone", "/metadata/*.yml"])
 
 def load_data():
     global versions
@@ -321,23 +386,29 @@ def load_data():
 
 
 def fetch_metrics():
+    pattern = re.compile(r"^/repo/(.+)_(\d+)\.apk$")
     for dir in ['http02', 'http03']:
         path = f"{DIR_METRICS}/{dir}"
-        if is_path_fresh(f"{path}/index.json"):
-            return
         os.makedirs(path, exist_ok=True)
-        url = f"https://fdroid.gitlab.io/metrics/{dir}.fdroid.net/index.json"
-        response = requests.get(url)
-        with open(f"{path}/index.json", 'wb') as file:
-            file.write(response.content)
-        index = response.json()
+        url = f"https://fdroid.gitlab.io/metrics/{dir}.fdroid.net"
+        index = requests.get(f"{url}/index.json", timeout=60).json()
         for file_name in index:
             if os.path.exists(f"{path}/{file_name}"):
                 continue
-            file_url = f"https://fdroid.gitlab.io/metrics/{dir}.fdroid.net/{file_name}"
-            response = requests.get(file_url)
-            with open(f"{path}/{file_name}", 'wb') as file:
-                file.write(response.content)
+            if datetime.now() - datetime.strptime(Path(file_name).stem, '%Y-%m-%d') < timedelta(days=14):
+                continue
+            response = requests.get(f"{url}/{file_name}", timeout=300)
+            if response.status_code != 200:
+                continue
+            hits = {}
+            for value, entry in response.json().get('paths', {}).items():
+                match = pattern.match(value)
+                if match:
+                    package, versionCode = match.groups()
+                    hits.setdefault(package, {})[versionCode] = entry.get('hits')
+            if hits:
+                with open(f"{path}/{file_name}", 'w', encoding='utf-8') as file:
+                    json.dump(hits, file, sort_keys=True, separators=(',', ':'))
 
 def process_metrics():
     global metrics
@@ -345,28 +416,20 @@ def process_metrics():
     for dir in ['http02', 'http03']:
         path = f"{DIR_METRICS}/{dir}"
         for filename in os.listdir(path):
-            if filename == 'index.json':
-                continue
             full_path = os.path.join(path, filename)
             with open(full_path, 'r', encoding='utf-8') as file:
                 data = json.load(file)
-                paths = data.get('paths')
-                for value in paths:
-                    if value.startswith('/repo/') and value.endswith('.apk'):
-                        pattern = re.compile(r"^/repo/(.+)_(\d+)\.apk$")
-                        match = pattern.match(value)
-                        if match:
-                            package, versionCode = match.groups()
-                            versionCode = int(versionCode)
-                            hits = paths.get(value).get('hits')
-                            if package not in metrics:
-                                metrics[package] = {'hits': 0, 'versionCodes': set(), 'versionNames': set()}
-                            if package in versions:
-                                if versionCode in versions[package]:
-                                    versionName = versions[package][versionCode]
-                                    if versionName is not None:
-                                        metrics[package]["hits"] += hits
-                                        metrics[package]["versionNames"].add(versionName)
+                for package, codes in data.items():
+                    for versionCode, hits in codes.items():
+                        versionCode = int(versionCode)
+                        if package not in metrics:
+                            metrics[package] = {'hits': 0, 'versionCodes': set(), 'versionNames': set()}
+                        if package in versions:
+                            if versionCode in versions[package]:
+                                versionName = versions[package][versionCode]
+                                if versionName is not None:
+                                    metrics[package]["hits"] += hits
+                                    metrics[package]["versionNames"].add(versionName)
 
 def get_metrics_count(package):
     global metrics
@@ -379,37 +442,31 @@ def get_metrics_count(package):
         return average_downloads_per_version
 
 def get_google_downloads(package):
-    path = f"work/google/{package}.json"
-    if os.path.exists(path):
-        with open(path, 'r', encoding='utf-8') as file:
-            data = json.load(file)
-            return data.get('realInstalls', None)
+    record = google.get(package)
+    if record is not None:
+        return record.get('installs')
     return None
 
 def fetch_google_play():
-    os.makedirs('work/google', exist_ok=True)
-    fetch_google_play_apps_from_repo(FILE_REPO_FDROID)
-    fetch_google_play_apps_from_repo(FILE_REPO_FDROID_ARCHIVE)
-    fetch_google_play_apps_from_repo(FILE_REPO_IZZY)
-
-def fetch_google_play_apps_from_repo(repo_file):
-    google_missing_file = Path("work/google_missing.pkl")
-    global google_missing
-    google_missing = pickle.loads(google_missing_file.read_bytes()) if google_missing_file.exists() else set()
-
-    for application in ET.parse(repo_file).getroot().findall('application'):
-        pkg = application.find('id').text
-        path = f"work/google/{pkg}.json"
-        if os.path.exists(path) or pkg in google_missing:
-            continue
-        #time.sleep(random.uniform(5, 10))
+    global google
+    pkgs = {}
+    for repo_file in [FILE_REPO_FDROID, FILE_REPO_FDROID_ARCHIVE, FILE_REPO_IZZY]:
+        for application in ET.parse(repo_file).getroot().findall('application'):
+            pkgs.setdefault(application.find('id').text)
+    google = {pkg: record for pkg, record in load_state('google').items() if pkg in pkgs}
+    for pkg in due(google, pkgs, TTL_GOOGLE, BUDGET_GOOGLE):
+        time.sleep(random.uniform(3, 6))
         try:
             result = google_play_scraper.app(pkg)
-            with open(path, 'w') as file:
-                json.dump(result, file, indent=4)
-        except NotFoundError as e:
-            google_missing.add(pkg)
-        google_missing_file.write_bytes(pickle.dumps(google_missing))
+            google[pkg] = {"installs": result.get('realInstalls'), "status": 200, "fetched": timestamp()}
+        except NotFoundError:
+            google[pkg] = {"status": 404, "fetched": timestamp()}
+        except ExtraHTTPError as e:
+            print(f"::warning::google: stopped at {pkg}: {e}")
+            break
+        except Exception as e:
+            print(f"google: {pkg}: {e}")
+    save_state('google', google)
 
 
 fetch_fdroiddata()
